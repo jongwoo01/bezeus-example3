@@ -7,9 +7,16 @@ import type { HandLandmarker, NormalizedLandmark } from "@mediapipe/tasks-vision
 type CameraState = "idle" | "loading" | "ready" | "denied" | "unavailable" | "error";
 type ViewMode = "home" | "setting";
 
+interface HandPoint {
+  x: number;
+  y: number;
+}
+
 interface LightningState {
   x: number;
   y: number;
+  screenX: number;
+  screenY: number;
   hue: number;
   intensity: number;
   speed: number;
@@ -18,6 +25,7 @@ interface LightningState {
   openAmount: number;
   handVisible: boolean;
   handOpen: boolean;
+  handPoints: HandPoint[];
 }
 
 interface LightningProps {
@@ -31,6 +39,8 @@ interface LightningProps {
 const initialLightning: LightningState = {
   x: 0,
   y: 0,
+  screenX: 0.5,
+  screenY: 0.5,
   hue: 220,
   intensity: 0.6,
   speed: 1.6,
@@ -39,6 +49,7 @@ const initialLightning: LightningState = {
   openAmount: 0,
   handVisible: false,
   handOpen: false,
+  handPoints: [],
 };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -67,6 +78,41 @@ const originalLightningSettings = {
   speed: 1.6,
   intensity: 0.6,
   size: 2,
+};
+
+const handConnections = [
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 4],
+  [0, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8],
+  [5, 9],
+  [9, 10],
+  [10, 11],
+  [11, 12],
+  [9, 13],
+  [13, 14],
+  [14, 15],
+  [15, 16],
+  [13, 17],
+  [17, 18],
+  [18, 19],
+  [19, 20],
+  [0, 17],
+] as const;
+
+const toScreenHandPoints = (landmarks: NormalizedLandmark[]): HandPoint[] =>
+  landmarks.map((landmark) => ({
+    x: clamp(1 - landmark.x, 0, 1),
+    y: clamp(landmark.y, 0, 1),
+  }));
+
+const getViewportAspect = () => {
+  if (typeof window === "undefined" || window.innerHeight === 0) return 16 / 9;
+  return window.innerWidth / window.innerHeight;
 };
 
 function analyzeHand(
@@ -430,9 +476,11 @@ export const HeroSection: React.FC = () => {
 
           if (landmarks) {
             const analyzed = analyzeHand(landmarks, previousHandRef.current);
-            const mirroredX = 1 - analyzed.center.x;
-            const targetX = clamp((mirroredX - 0.5) * 1.72, -0.86, 0.86);
-            const targetY = clamp((0.5 - analyzed.center.y) * 1.28, -0.64, 0.64);
+            const screenX = clamp(1 - analyzed.center.x, 0, 1);
+            const screenY = clamp(analyzed.center.y, 0, 1);
+            const targetX = (screenX - 0.5) * 2 * getViewportAspect();
+            const targetY = (0.5 - screenY) * 2;
+            const handPoints = toScreenHandPoints(landmarks);
             previousHandRef.current = {
               x: analyzed.center.x,
               y: analyzed.center.y,
@@ -442,6 +490,8 @@ export const HeroSection: React.FC = () => {
             setLightning((current) => ({
               x: mix(current.x, targetX, 0.36),
               y: mix(current.y, targetY, 0.28),
+              screenX: mix(current.screenX, screenX, 0.36),
+              screenY: mix(current.screenY, screenY, 0.28),
               hue: originalLightningSettings.hue,
               intensity: originalLightningSettings.intensity,
               speed: originalLightningSettings.speed,
@@ -450,6 +500,7 @@ export const HeroSection: React.FC = () => {
               openAmount: mix(current.openAmount, analyzed.openAmount, 0.26),
               handVisible: true,
               handOpen: analyzed.isOpen,
+              handPoints,
             }));
           } else {
             previousHandRef.current = undefined;
@@ -458,6 +509,7 @@ export const HeroSection: React.FC = () => {
               openAmount: mix(current.openAmount, 0, 0.12),
               handVisible: false,
               handOpen: false,
+              handPoints: [],
             }));
           }
         }
@@ -548,8 +600,8 @@ export const HeroSection: React.FC = () => {
     };
   }, [refreshStatus, stopCamera]);
 
-  const handLeft = `${(lightning.x / 1.72 + 0.5) * 100}%`;
-  const handTop = `${(0.5 - lightning.y / 1.28) * 100}%`;
+  const handLeft = `${lightning.screenX * 100}%`;
+  const handTop = `${lightning.screenY * 100}%`;
   const isCameraReady = cameraState === "ready";
 
   return (
@@ -569,7 +621,7 @@ export const HeroSection: React.FC = () => {
           className="absolute -inset-y-[18%] inset-x-0"
           animate={{
             opacity: lightning.handOpen ? 1 : 0,
-            y: `${-lightning.y * 18}vh`,
+            y: `${-lightning.y * 12}vh`,
           }}
           transition={{ duration: 0.28, ease: "easeOut" }}
         >
@@ -584,7 +636,7 @@ export const HeroSection: React.FC = () => {
       </div>
 
       <motion.div
-        className="pointer-events-none absolute z-10 h-48 w-48 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-200/15 bg-cyan-200/[0.025]"
+        className="pointer-events-none absolute z-10 h-56 w-56 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-200/15 bg-cyan-200/[0.018]"
         style={{
           left: handLeft,
           top: handTop,
@@ -599,7 +651,55 @@ export const HeroSection: React.FC = () => {
       >
         <div className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-100/45 shadow-[0_0_22px_rgba(125,230,255,0.55)]" />
         <div className="absolute inset-8 rounded-full border border-white/10 blur-[1px]" />
+        <div
+          className={`absolute left-1/2 top-[calc(100%+0.75rem)] -translate-x-1/2 whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.22em] backdrop-blur-md ${
+            lightning.handOpen
+              ? "border-cyan-200/30 bg-cyan-200/10 text-cyan-100"
+              : "border-violet-200/20 bg-violet-300/8 text-violet-100/75"
+          }`}
+        >
+          {lightning.handOpen ? "Open hand" : "Fist / closed"}
+        </div>
       </motion.div>
+
+      <svg
+        className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        style={{ opacity: lightning.handVisible ? 0.38 : 0 }}
+      >
+        <g>
+          {handConnections.map(([from, to]) => {
+            const start = lightning.handPoints[from];
+            const end = lightning.handPoints[to];
+
+            if (!start || !end) return null;
+
+            return (
+              <line
+                key={`${from}-${to}`}
+                x1={start.x * 100}
+                y1={start.y * 100}
+                x2={end.x * 100}
+                y2={end.y * 100}
+                stroke={lightning.handOpen ? "rgba(165, 243, 252, 0.62)" : "rgba(196, 181, 253, 0.42)"}
+                strokeWidth={lightning.handOpen ? 0.22 : 0.16}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+          {lightning.handPoints.map((point, index) => (
+            <circle
+              key={index}
+              cx={point.x * 100}
+              cy={point.y * 100}
+              r={index === 0 ? 0.38 : 0.26}
+              fill={lightning.handOpen ? "rgba(207, 250, 254, 0.58)" : "rgba(221, 214, 254, 0.38)"}
+            />
+          ))}
+        </g>
+      </svg>
 
       <header className="absolute left-0 right-0 top-0 z-30 px-4 py-5 sm:px-8">
         <nav className="mx-auto flex max-w-6xl items-center justify-between rounded-full border border-white/15 bg-black/35 px-4 py-3 shadow-[0_0_40px_rgba(80,170,255,0.08)] backdrop-blur-xl sm:px-5">
