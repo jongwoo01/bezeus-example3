@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import type { HandLandmarker, NormalizedLandmark } from "@mediapipe/tasks-vision";
 
 type CameraState = "idle" | "loading" | "ready" | "denied" | "unavailable" | "error";
@@ -169,6 +169,7 @@ const Lightning: React.FC<LightningProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const uniformsRef = useRef({ hue, xOffset, speed, intensity, size });
+  const [webglAvailable, setWebglAvailable] = useState(true);
 
   useEffect(() => {
     uniformsRef.current = { hue, xOffset, speed, intensity, size };
@@ -187,11 +188,12 @@ const Lightning: React.FC<LightningProps> = ({
 
     const gl = canvas.getContext("webgl");
     if (!gl) {
-      console.error("WebGL not supported");
+      setWebglAvailable(false);
       return () => {
         window.removeEventListener("resize", resizeCanvas);
       };
     }
+    setWebglAvailable(true);
 
     const vertexShaderSource = `
       attribute vec2 aPosition;
@@ -302,15 +304,21 @@ const Lightning: React.FC<LightningProps> = ({
     const vertexShader = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
     const fragmentShader = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
     if (!vertexShader || !fragmentShader) {
+      setWebglAvailable(false);
       return () => {
         window.removeEventListener("resize", resizeCanvas);
+        if (vertexShader) gl.deleteShader(vertexShader);
+        if (fragmentShader) gl.deleteShader(fragmentShader);
       };
     }
 
     const program = gl.createProgram();
     if (!program) {
+      setWebglAvailable(false);
       return () => {
         window.removeEventListener("resize", resizeCanvas);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
       };
     }
 
@@ -319,8 +327,12 @@ const Lightning: React.FC<LightningProps> = ({
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
       console.error("Program linking error:", gl.getProgramInfoLog(program));
+      setWebglAvailable(false);
       return () => {
         window.removeEventListener("resize", resizeCanvas);
+        gl.deleteProgram(program);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
       };
     }
     gl.useProgram(program);
@@ -373,7 +385,16 @@ const Lightning: React.FC<LightningProps> = ({
     };
   }, []);
 
-  return <canvas ref={canvasRef} className="w-full h-full relative" />;
+  return (
+    <div className="relative h-full w-full">
+      <canvas ref={canvasRef} className="relative h-full w-full" />
+      {!webglAvailable && (
+        <div className="absolute inset-0 grid place-items-center bg-black/70 px-6 text-center text-sm text-cyan-100/80">
+          WebGL is unavailable in this browser. The camera state panel can still be used to check permission and tracking readiness.
+        </div>
+      )}
+    </div>
+  );
 };
 
 const statusCopy: Record<CameraState, string> = {
@@ -383,6 +404,15 @@ const statusCopy: Record<CameraState, string> = {
   denied: "Camera permission was denied",
   unavailable: "Camera is unavailable",
   error: "Camera could not start",
+};
+
+const statusGuidance: Record<CameraState, string> = {
+  idle: "카메라를 켜기 전 상태입니다. 권한 요청 전에도 기능 설명과 제스처 모델을 확인할 수 있습니다.",
+  loading: "브라우저 권한, 카메라 스트림, 손 추적 모델을 순서대로 준비하고 있습니다.",
+  ready: "카메라와 손 추적이 동작 중입니다. 손을 화면 중앙에 두고 손바닥을 펴보세요.",
+  denied: "브라우저에서 카메라 권한이 거부되었습니다. 사이트 권한을 허용한 뒤 다시 시도하세요.",
+  unavailable: "이 브라우저나 장치에서 카메라 API를 사용할 수 없습니다. 설정 화면에서 상태 모델은 확인할 수 있습니다.",
+  error: "카메라 또는 추적 모델을 시작하지 못했습니다. 다른 앱의 카메라 점유 여부를 확인한 뒤 다시 시도하세요.",
 };
 
 const gestureCards = [
@@ -403,7 +433,53 @@ const gestureCards = [
   },
 ];
 
+const processCards = [
+  {
+    label: "Risk",
+    title: "Camera permission first",
+    body: "카메라 권한, 장치 부재, 브라우저 지원 여부를 먼저 분리해 실패 원인을 추적한다.",
+  },
+  {
+    label: "Prototype",
+    title: "Gesture-driven lightning",
+    body: "손바닥 열림, 위치, 회전을 최소 유스케이스로 정하고 인터랙션을 검증한다.",
+  },
+  {
+    label: "Quality",
+    title: "Fallback and status model",
+    body: "WebGL과 카메라가 실패해도 상태 설명과 재시도 경로가 남도록 설계한다.",
+  },
+];
+
+const qualityGates = [
+  "카메라 권한 거부 시 오류 안내가 표시되는가",
+  "WebGL 미지원 브라우저에서 대체 안내가 보이는가",
+  "손 인식 상태와 제스처 상태가 설정 화면에서 구분되는가",
+  "모션 감소 설정에서 과한 애니메이션을 줄이는가",
+];
+
+const getCameraFailureMessage = (error: unknown) => {
+  if (!(error instanceof DOMException)) {
+    return "카메라 또는 손 추적 모델을 시작하는 중 알 수 없는 오류가 발생했습니다.";
+  }
+
+  if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
+    return "카메라 권한이 차단되었습니다. 브라우저 사이트 설정에서 카메라 권한을 허용해주세요.";
+  }
+
+  if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") {
+    return "사용 가능한 카메라 장치를 찾지 못했습니다.";
+  }
+
+  if (error.name === "NotReadableError" || error.name === "TrackStartError") {
+    return "다른 앱이 카메라를 사용 중일 수 있습니다. 카메라를 사용하는 앱을 종료한 뒤 다시 시도해주세요.";
+  }
+
+  return "카메라를 시작하지 못했습니다. 브라우저와 장치 상태를 확인한 뒤 다시 시도해주세요.";
+};
+
 export const HeroSection: React.FC = () => {
+  const prefersReducedMotion = useReducedMotion();
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const landmarkerRef = useRef<HandLandmarker | null>(null);
@@ -418,6 +494,7 @@ export const HeroSection: React.FC = () => {
   const [showPrepare, setShowPrepare] = useState(true);
   const [lightning, setLightning] = useState<LightningState>(initialLightning);
   const [streamActive, setStreamActive] = useState(false);
+  const [cameraMessage, setCameraMessage] = useState(statusGuidance.idle);
 
   useEffect(() => {
     const originalError = console.error;
@@ -527,10 +604,12 @@ export const HeroSection: React.FC = () => {
 
     setShowPrepare(false);
     setCameraState("loading");
+    setCameraMessage(statusGuidance.loading);
 
     try {
       if (!canUseCamera()) {
         setCameraState("unavailable");
+        setCameraMessage(statusGuidance.unavailable);
         setShowPrepare(true);
         return;
       }
@@ -572,11 +651,13 @@ export const HeroSection: React.FC = () => {
       }
 
       setCameraState("ready");
+      setCameraMessage(statusGuidance.ready);
       startDetection();
     } catch (error) {
       stopCamera();
       const name = error instanceof DOMException ? error.name : "";
       setCameraState(name === "NotAllowedError" || name === "PermissionDeniedError" ? "denied" : "error");
+      setCameraMessage(getCameraFailureMessage(error));
       setShowPrepare(true);
     }
   }, [cameraState, startDetection, stopCamera]);
@@ -585,11 +666,14 @@ export const HeroSection: React.FC = () => {
     if (streamRef.current?.active) {
       setStreamActive(true);
       setCameraState("ready");
+      setCameraMessage(statusGuidance.ready);
       return;
     }
 
     setStreamActive(false);
-    setCameraState(canUseCamera() ? "idle" : "unavailable");
+    const nextState = canUseCamera() ? "idle" : "unavailable";
+    setCameraState(nextState);
+    setCameraMessage(statusGuidance[nextState]);
   }, []);
 
   useEffect(() => {
@@ -603,6 +687,11 @@ export const HeroSection: React.FC = () => {
   const handLeft = `${lightning.screenX * 100}%`;
   const handTop = `${lightning.screenY * 100}%`;
   const isCameraReady = cameraState === "ready";
+  const trackingReadiness = [
+    { label: "Camera", value: streamActive ? "active" : "inactive" },
+    { label: "Hand", value: lightning.handVisible ? "detected" : "waiting" },
+    { label: "Gesture", value: lightning.handOpen ? "open palm" : "closed or none" },
+  ];
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-black text-white">
@@ -610,6 +699,7 @@ export const HeroSection: React.FC = () => {
         ref={videoRef}
         playsInline
         muted
+        aria-hidden="true"
         className="pointer-events-none absolute h-px w-px opacity-0"
       />
 
@@ -620,7 +710,7 @@ export const HeroSection: React.FC = () => {
         <motion.div
           className="absolute -inset-y-[18%] inset-x-0"
           animate={{
-            opacity: lightning.handOpen ? 1 : 0,
+            opacity: prefersReducedMotion ? 0 : lightning.handOpen ? 1 : 0,
             y: `${-lightning.y * 12}vh`,
           }}
           transition={{ duration: 0.28, ease: "easeOut" }}
@@ -646,8 +736,9 @@ export const HeroSection: React.FC = () => {
           opacity: lightning.handVisible ? 0.42 : 0,
           scale: 0.78 + lightning.openAmount * 0.32,
         }}
-        animate={{ rotate: lightning.angle * 40 }}
+        animate={{ rotate: prefersReducedMotion ? 0 : lightning.angle * 40 }}
         transition={{ type: "spring", stiffness: 160, damping: 28 }}
+        aria-hidden="true"
       >
         <div className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-100/45 shadow-[0_0_22px_rgba(125,230,255,0.55)]" />
         <div className="absolute inset-8 rounded-full border border-white/10 blur-[1px]" />
@@ -702,7 +793,7 @@ export const HeroSection: React.FC = () => {
       </svg>
 
       <header className="absolute left-0 right-0 top-0 z-30 px-4 py-5 sm:px-8">
-        <nav className="mx-auto flex max-w-6xl items-center justify-between rounded-full border border-white/15 bg-black/35 px-4 py-3 shadow-[0_0_40px_rgba(80,170,255,0.08)] backdrop-blur-xl sm:px-5">
+        <nav className="mx-auto flex max-w-6xl items-center justify-between rounded-full border border-white/15 bg-black/35 px-4 py-3 shadow-[0_0_40px_rgba(80,170,255,0.08)] backdrop-blur-xl sm:px-5" aria-label="Primary navigation">
           <button
             className="flex items-center gap-3 text-left"
             onClick={() => setView("home")}
@@ -725,12 +816,14 @@ export const HeroSection: React.FC = () => {
             <button
               className="rounded-full px-3 py-2 transition hover:bg-white/10 hover:text-white"
               onClick={() => setView("home")}
+              aria-pressed={view === "home"}
             >
               Home
             </button>
             <button
               className="rounded-full px-3 py-2 transition hover:bg-white/10 hover:text-white"
               onClick={() => setView("setting")}
+              aria-pressed={view === "setting"}
             >
               Setting
             </button>
@@ -775,11 +868,14 @@ export const HeroSection: React.FC = () => {
               <p className="mt-2 max-w-2xl text-sm text-white/45">
                 Open your hand wide in front of the camera to summon lightning.
               </p>
+              <p className="mt-4 max-w-xl rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm leading-6 text-white/52">
+                카메라 권한이 거부되거나 장치가 없을 때는 Setting 화면에서 상태를 확인하고 다시 시도할 수 있습니다.
+              </p>
 
               <div className="mt-9 flex flex-col items-center gap-3 sm:flex-row">
                 <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.98 }}
+                  whileHover={prefersReducedMotion ? undefined : { scale: 1.03 }}
+                  whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
                   className="rounded-full border border-cyan-200/40 bg-cyan-200 px-6 py-3 text-sm font-semibold text-black shadow-[0_0_34px_rgba(80,202,255,0.24)] transition hover:bg-white"
                   onClick={enableCamera}
                   disabled={cameraState === "loading"}
@@ -794,11 +890,12 @@ export const HeroSection: React.FC = () => {
                 </button>
               </div>
 
-              <div className="mt-8 flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-xs text-white/55 backdrop-blur-md">
+              <div className="mt-8 flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.035] px-4 py-2 text-xs text-white/55 backdrop-blur-md" role="status" aria-live="polite">
                 <span
                   className={`h-2 w-2 rounded-full ${
                     isCameraReady ? "bg-cyan-300 shadow-[0_0_14px_#67e8f9]" : "bg-white/30"
                   }`}
+                  aria-hidden="true"
                 />
                 {statusCopy[cameraState]}
                 {isCameraReady && (
@@ -806,6 +903,16 @@ export const HeroSection: React.FC = () => {
                     {lightning.handOpen ? "Open hand detected" : "Waiting for open palm"}
                   </span>
                 )}
+              </div>
+
+              <div className="mt-10 grid w-full max-w-4xl gap-4 text-left md:grid-cols-3">
+                {processCards.map((card) => (
+                  <article key={card.label} className="rounded-[24px] border border-white/12 bg-white/[0.04] p-5 backdrop-blur-xl">
+                    <p className="text-xs uppercase tracking-[0.22em] text-cyan-100/55">{card.label}</p>
+                    <h3 className="mt-4 text-xl font-semibold text-white">{card.title}</h3>
+                    <p className="mt-3 text-sm leading-6 text-white/55">{card.body}</p>
+                  </article>
+                ))}
               </div>
             </motion.section>
           ) : (
@@ -838,30 +945,28 @@ export const HeroSection: React.FC = () => {
                   <h3 className="mt-4 text-2xl font-semibold text-white">
                     {statusCopy[cameraState]}
                   </h3>
+                  <p className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm leading-6 text-white/58" role="status" aria-live="polite">
+                    {cameraMessage}
+                  </p>
                   <dl className="mt-6 space-y-4 text-sm">
                     <div className="flex justify-between gap-4 border-b border-white/10 pb-3">
                       <dt className="text-white/45">Permission</dt>
                       <dd className="text-white/80">{cameraState}</dd>
                     </div>
-                    <div className="flex justify-between gap-4 border-b border-white/10 pb-3">
-                      <dt className="text-white/45">Stream</dt>
-                      <dd className="text-white/80">
-                        {streamActive ? "active" : "inactive"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between gap-4">
-                      <dt className="text-white/45">Gesture</dt>
-                      <dd className="text-white/80">
-                        {lightning.handOpen ? "open hand" : lightning.handVisible ? "hand closed" : "not detected"}
-                      </dd>
-                    </div>
+                    {trackingReadiness.map((item) => (
+                      <div key={item.label} className="flex justify-between gap-4 border-b border-white/10 pb-3 last:border-b-0 last:pb-0">
+                        <dt className="text-white/45">{item.label}</dt>
+                        <dd className="text-white/80">{item.value}</dd>
+                      </div>
+                    ))}
                   </dl>
                   <div className="mt-7 flex flex-wrap gap-3">
                     <button
                       className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:bg-cyan-100"
                       onClick={enableCamera}
+                      disabled={cameraState === "loading"}
                     >
-                      Enable Camera
+                      {cameraState === "loading" ? "Preparing..." : "Enable Camera"}
                     </button>
                     <button
                       className="rounded-full border border-white/12 px-4 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white"
@@ -893,6 +998,20 @@ export const HeroSection: React.FC = () => {
                   ))}
                 </div>
               </div>
+
+              <div className="mt-5 rounded-[28px] border border-white/12 bg-white/[0.04] p-6 backdrop-blur-xl">
+                <p className="text-xs uppercase tracking-[0.26em] text-cyan-100/55">
+                  Quality Gate
+                </p>
+                <ul className="mt-5 grid gap-3 text-sm leading-6 text-white/62 md:grid-cols-2">
+                  {qualityGates.map((gate) => (
+                    <li key={gate} className="flex gap-3">
+                      <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-cyan-200" aria-hidden="true"></span>
+                      <span>{gate}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </motion.section>
           )}
         </AnimatePresence>
@@ -905,6 +1024,9 @@ export const HeroSection: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="prepare-title"
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.96, y: 18 }}
@@ -913,7 +1035,7 @@ export const HeroSection: React.FC = () => {
               className="w-full max-w-md rounded-[28px] border border-white/14 bg-zinc-950/78 p-6 text-left shadow-[0_30px_100px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
             >
               <p className="text-xs uppercase tracking-[0.28em] text-cyan-100/55">Prepare</p>
-              <h2 className="mt-4 text-3xl font-semibold text-white">
+              <h2 id="prepare-title" className="mt-4 text-3xl font-semibold text-white">
                 Prepare to channel thunder.
               </h2>
               <p className="mt-4 text-sm leading-6 text-white/58">
@@ -922,9 +1044,7 @@ export const HeroSection: React.FC = () => {
               </p>
               {(cameraState === "denied" || cameraState === "unavailable" || cameraState === "error") && (
                 <p className="mt-4 rounded-2xl border border-rose-300/15 bg-rose-400/10 p-3 text-sm text-rose-100/80">
-                  {cameraState === "denied"
-                    ? "Camera permission is blocked. Update browser permissions and try again."
-                    : "The camera could not be started on this device or browser."}
+                  {cameraMessage}
                 </p>
               )}
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
