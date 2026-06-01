@@ -15,6 +15,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "BeZeus",
   description: "A camera-controlled thunder interface for summoning lightning by hand.",
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    title: "BeZeus",
+    description: "Camera, hand tracking, WebGL fallback, and gesture-based lightning prototype.",
+    type: "website",
+  },
 };
 
 export default function RootLayout({
