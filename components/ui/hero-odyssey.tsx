@@ -451,11 +451,49 @@ const processCards = [
   },
 ];
 
+const readinessChecklist = [
+  {
+    title: "Permission model",
+    body: "권한 거부, 장치 없음, 모델 로딩 실패를 같은 오류로 묶지 않고 각각 다른 안내로 분리한다.",
+  },
+  {
+    title: "Interaction contract",
+    body: "손바닥 열림, 위치, 회전이라는 입력이 번개 표시, 색감, 강도라는 출력으로 어떻게 연결되는지 고정한다.",
+  },
+  {
+    title: "Fallback path",
+    body: "카메라나 WebGL이 실패해도 사용자가 현재 상태와 다음 행동을 이해할 수 있게 한다.",
+  },
+  {
+    title: "Motion safety",
+    body: "브라우저의 모션 감소 설정을 존중해 과한 시각 효과를 줄인다.",
+  },
+];
+
 const qualityGates = [
   "카메라 권한 거부 시 오류 안내가 표시되는가",
   "WebGL 미지원 브라우저에서 대체 안내가 보이는가",
   "손 인식 상태와 제스처 상태가 설정 화면에서 구분되는가",
   "모션 감소 설정에서 과한 애니메이션을 줄이는가",
+];
+
+const manualTestScenarios = [
+  {
+    label: "Happy path",
+    steps: "Enable Camera -> 손바닥 열기 -> 번개와 상태 문구 확인",
+  },
+  {
+    label: "Permission denied",
+    steps: "브라우저 카메라 권한 차단 -> 오류 문구와 재시도 경로 확인",
+  },
+  {
+    label: "No hand detected",
+    steps: "카메라 활성화 후 손을 화면 밖으로 이동 -> Hand 상태가 waiting으로 내려가는지 확인",
+  },
+  {
+    label: "Settings recovery",
+    steps: "Setting 화면에서 Refresh Status -> 현재 카메라 상태가 다시 계산되는지 확인",
+  },
 ];
 
 const getCameraFailureMessage = (error: unknown) => {
@@ -914,6 +952,18 @@ export const HeroSection: React.FC = () => {
                   </article>
                 ))}
               </div>
+
+              <div className="mt-5 grid w-full max-w-4xl gap-4 text-left md:grid-cols-2">
+                {readinessChecklist.map((item) => (
+                  <article
+                    key={item.title}
+                    className="rounded-[22px] border border-cyan-200/12 bg-black/28 p-5 backdrop-blur-xl"
+                  >
+                    <h3 className="text-base font-semibold text-cyan-100">{item.title}</h3>
+                    <p className="mt-2 text-sm leading-6 text-white/52">{item.body}</p>
+                  </article>
+                ))}
+              </div>
             </motion.section>
           ) : (
             <motion.section
@@ -1011,6 +1061,20 @@ export const HeroSection: React.FC = () => {
                     </li>
                   ))}
                 </ul>
+              </div>
+
+              <div className="mt-5 rounded-[28px] border border-white/12 bg-black/32 p-6 backdrop-blur-xl">
+                <p className="text-xs uppercase tracking-[0.26em] text-cyan-100/55">
+                  Manual Test Scenarios
+                </p>
+                <div className="mt-5 grid gap-3 md:grid-cols-2">
+                  {manualTestScenarios.map((scenario) => (
+                    <article key={scenario.label} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+                      <h3 className="text-sm font-semibold text-white">{scenario.label}</h3>
+                      <p className="mt-2 text-sm leading-6 text-white/55">{scenario.steps}</p>
+                    </article>
+                  ))}
+                </div>
               </div>
             </motion.section>
           )}
