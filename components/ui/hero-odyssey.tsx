@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import type { HandLandmarker, NormalizedLandmark } from "@mediapipe/tasks-vision";
+import { StatusMetric } from "@/components/ui/status-metric";
 
 type CameraState = "idle" | "loading" | "ready" | "denied" | "unavailable" | "error";
 type ViewMode = "home" | "setting";
@@ -568,15 +569,32 @@ export const HeroSection: React.FC = () => {
     }
   }, []);
 
+  const resetTrackingState = useCallback(() => {
+    previousHandRef.current = undefined;
+    lastVideoTimeRef.current = -1;
+    setLightning(initialLightning);
+  }, []);
+
   const stopCamera = useCallback(() => {
     stopDetection();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
     setStreamActive(false);
     landmarkerRef.current?.close();
     landmarkerRef.current = null;
-    previousHandRef.current = undefined;
-  }, [stopDetection]);
+    resetTrackingState();
+  }, [resetTrackingState, stopDetection]);
+
+  const disableCamera = useCallback(() => {
+    stopCamera();
+    const nextState = canUseCamera() ? "idle" : "unavailable";
+    setCameraState(nextState);
+    setCameraMessage(statusGuidance[nextState]);
+    setShowPrepare(nextState !== "idle");
+  }, [stopCamera]);
 
   const startDetection = useCallback(() => {
     const detect = () => {
@@ -640,6 +658,10 @@ export const HeroSection: React.FC = () => {
   const enableCamera = useCallback(async () => {
     if (cameraState === "loading") return;
 
+    if (cameraState === "ready") {
+      stopCamera();
+    }
+
     setShowPrepare(false);
     setCameraState("loading");
     setCameraMessage(statusGuidance.loading);
@@ -663,6 +685,14 @@ export const HeroSection: React.FC = () => {
 
       streamRef.current = stream;
       setStreamActive(true);
+      stream.getVideoTracks().forEach((track) => {
+        track.onended = () => {
+          stopCamera();
+          setCameraState("idle");
+          setCameraMessage("카메라 스트림이 종료되었습니다. 다시 추적하려면 카메라를 다시 켜주세요.");
+          setShowPrepare(true);
+        };
+      });
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -725,10 +755,14 @@ export const HeroSection: React.FC = () => {
   const handLeft = `${lightning.screenX * 100}%`;
   const handTop = `${lightning.screenY * 100}%`;
   const isCameraReady = cameraState === "ready";
+  const handPositionLabel = lightning.handVisible
+    ? `${Math.round(lightning.screenX * 100)}% x, ${Math.round(lightning.screenY * 100)}% y`
+    : "not detected";
   const trackingReadiness = [
     { label: "Camera", value: streamActive ? "active" : "inactive" },
     { label: "Hand", value: lightning.handVisible ? "detected" : "waiting" },
     { label: "Gesture", value: lightning.handOpen ? "open palm" : "closed or none" },
+    { label: "Position", value: handPositionLabel },
   ];
 
   return (
@@ -877,7 +911,7 @@ export const HeroSection: React.FC = () => {
         </nav>
       </header>
 
-      <main className="relative z-20 min-h-screen px-5 pb-8 pt-28 sm:px-8">
+      <main id="bezeus-interface" className="relative z-20 min-h-screen px-5 pb-8 pt-28 sm:px-8">
         <AnimatePresence mode="wait">
           {view === "home" ? (
             <motion.section
@@ -917,9 +951,23 @@ export const HeroSection: React.FC = () => {
                   className="rounded-full border border-cyan-200/40 bg-cyan-200 px-6 py-3 text-sm font-semibold text-black shadow-[0_0_34px_rgba(80,202,255,0.24)] transition hover:bg-white"
                   onClick={enableCamera}
                   disabled={cameraState === "loading"}
+                  aria-busy={cameraState === "loading"}
+                  aria-label={isCameraReady ? "Restart camera tracking" : "Enable camera tracking"}
                 >
-                  {cameraState === "loading" ? "Preparing Camera..." : "Enable Camera to be Zeus"}
+                  {cameraState === "loading"
+                    ? "Preparing Camera..."
+                    : isCameraReady
+                      ? "Restart Camera"
+                      : "Enable Camera to be Zeus"}
                 </motion.button>
+                {isCameraReady && (
+                  <button
+                    className="rounded-full border border-rose-200/25 px-6 py-3 text-sm text-rose-100/80 transition hover:border-rose-200/45 hover:bg-rose-300/10 hover:text-white"
+                    onClick={disableCamera}
+                  >
+                    Stop Camera
+                  </button>
+                )}
                 <button
                   className="rounded-full border border-white/12 px-6 py-3 text-sm text-white/72 transition hover:border-white/30 hover:bg-white/[0.08] hover:text-white"
                   onClick={() => setView("setting")}
@@ -999,15 +1047,14 @@ export const HeroSection: React.FC = () => {
                     {cameraMessage}
                   </p>
                   <dl className="mt-6 space-y-4 text-sm">
-                    <div className="flex justify-between gap-4 border-b border-white/10 pb-3">
-                      <dt className="text-white/45">Permission</dt>
-                      <dd className="text-white/80">{cameraState}</dd>
-                    </div>
+                    <StatusMetric label="Permission" value={cameraState} emphasized={cameraState === "ready"} />
                     {trackingReadiness.map((item) => (
-                      <div key={item.label} className="flex justify-between gap-4 border-b border-white/10 pb-3 last:border-b-0 last:pb-0">
-                        <dt className="text-white/45">{item.label}</dt>
-                        <dd className="text-white/80">{item.value}</dd>
-                      </div>
+                      <StatusMetric
+                        key={item.label}
+                        label={item.label}
+                        value={item.value}
+                        emphasized={item.value === "active" || item.value === "detected" || item.value === "open palm"}
+                      />
                     ))}
                   </dl>
                   <div className="mt-7 flex flex-wrap gap-3">
@@ -1015,9 +1062,22 @@ export const HeroSection: React.FC = () => {
                       className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black transition hover:bg-cyan-100"
                       onClick={enableCamera}
                       disabled={cameraState === "loading"}
+                      aria-busy={cameraState === "loading"}
                     >
-                      {cameraState === "loading" ? "Preparing..." : "Enable Camera"}
+                      {cameraState === "loading"
+                        ? "Preparing..."
+                        : isCameraReady
+                          ? "Restart Camera"
+                          : "Enable Camera"}
                     </button>
+                    {isCameraReady && (
+                      <button
+                        className="rounded-full border border-rose-200/25 px-4 py-2 text-sm text-rose-100/75 transition hover:bg-rose-300/10 hover:text-white"
+                        onClick={disableCamera}
+                      >
+                        Stop Camera
+                      </button>
+                    )}
                     <button
                       className="rounded-full border border-white/12 px-4 py-2 text-sm text-white/70 transition hover:bg-white/10 hover:text-white"
                       onClick={refreshStatus}
@@ -1116,6 +1176,7 @@ export const HeroSection: React.FC = () => {
                   className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-black transition hover:bg-cyan-100"
                   onClick={enableCamera}
                   disabled={cameraState === "loading"}
+                  aria-busy={cameraState === "loading"}
                 >
                   {cameraState === "loading" ? "Preparing..." : "Enable Camera to be Zeus"}
                 </button>
